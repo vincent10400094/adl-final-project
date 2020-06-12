@@ -121,7 +121,10 @@ def make_data(data_path, mode):
     files = os.listdir(data_path)
     files.sort()
     raw_datas = []
+
     for file_name in files:
+        if file_name.startswith('.'): continue
+
         data = pd.read_excel(data_path+file_name, encoding = 'big5')
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
@@ -134,7 +137,7 @@ def make_data(data_path, mode):
                     continue
                 texts = tokenizer.tokenize(data_line[1])
                 tags, values = prepare_tags_and_values(data_line[6], data_line[7])
-                
+
                 assert len(tags) == len(values)
                 if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
                     datas.append({'text' : texts, 'tag' : tags, 'value' : values, 'pdf_id' : files[i].split('.')[0]})
