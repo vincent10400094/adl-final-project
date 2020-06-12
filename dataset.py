@@ -17,7 +17,8 @@ all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要�
 
 never_split_list = []
 tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased", do_lower_case = True, never_split = never_split_list)
-tokenizer.add_tokens(['～', 'Fax','１','２','３','４','５','６','７','８','９','０'])
+full_char = 'Ａ Ｂ Ｃ Ｄ Ｅ Ｆ Ｇ Ｈ Ｉ Ｊ Ｋ Ｌ Ｍ Ｎ Ｏ Ｐ Ｑ Ｒ Ｓ Ｔ Ｕ Ｖ Ｗ Ｘ Ｙ Ｚ'.split()
+tokenizer.add_tokens(['～','―', '‐', 'Fax','１','２','３','４','５','６','７','８','９','０'] + full_char)
 
 # [CLS] : 101
 # [SEP] : 102
@@ -114,7 +115,7 @@ def prepare_tags_and_values(tags, values):
 def pad_to_len(seq,padding):
     to_len = 512
     padded = seq + [padding] * max(0, to_len - len(seq))
-    return padded   
+    return padded
 
 def make_data(data_path, mode):
     files = os.listdir(data_path)
@@ -124,7 +125,7 @@ def make_data(data_path, mode):
         data = pd.read_excel(data_path+file_name, encoding = 'big5')
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
-    
+
     datas = []
     if mode != 'test':
         for i, data in enumerate(raw_datas):
@@ -133,6 +134,7 @@ def make_data(data_path, mode):
                     continue
                 texts = tokenizer.tokenize(data_line[1])
                 tags, values = prepare_tags_and_values(data_line[6], data_line[7])
+                
                 assert len(tags) == len(values)
                 if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
                     datas.append({'text' : texts, 'tag' : tags, 'value' : values, 'pdf_id' : files[i].split('.')[0]})
@@ -140,7 +142,6 @@ def make_data(data_path, mode):
                     datas[len(datas) - 1]['text'] += ['[SEP]'] + texts
                     datas[len(datas) - 1]['tag'] += tags
                     datas[len(datas) - 1]['value'] += values
-
 
         tokenized_all_tag = [tokenizer.tokenize(tag) for tag in all_tag]
         dataset = []
@@ -195,7 +196,7 @@ def make_data(data_path, mode):
                 texts = tokenizer.tokenize(data_line[1])
                 if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
                     datas.append({
-                        'text' : texts, 
+                        'text' : texts,
                         'pdf_id' : files[i].split('.')[0],
                         'sen_id' : [int(data_line[2])],
                     })
