@@ -10,10 +10,12 @@ from torch.utils.data import Dataset, DataLoader
 import pickle
 import json
 
-all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
+all_tag = ['O', '調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
             '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
             '資格申請締切日時', '入札書締切日時', '開札日時', '質問箇所所属/担当者', '質問箇所TEL/FAX', \
             '資格申請送付先', '資格申請送付先部署/担当者名', '入札書送付先', '入札書送付先部署/担当者名', '開札場所']
+tag_to_label = {text: i for i, text in enumerate(all_tag)}
+label_to_tag = {i: text for i, text in enumerate(all_tag + ['I-' + tag for tag in all_tag[1:]])}
 
 never_split_list = []
 tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased", do_lower_case = True, never_split = never_split_list)
@@ -108,7 +110,6 @@ def prepare_tags_and_values(tags, values):
                 tags.append(tags[0])
         for i in range(len(tags)):
             tags[i] = unicodedata.normalize("NFKC", re.sub('＊|\*|\s+', '', tags[i]))
-            tags[i] = tokenizer.tokenize(tags[i])
             values[i] = tokenizer.tokenize(values[i])
         return tags, values
 
@@ -130,68 +131,60 @@ def make_data(data_path, mode):
         raw_datas.append(raw_data)
 
     datas = []
-    if mode != 'test':
+    if mode != 'test': #training set
         for i, data in enumerate(raw_datas):
             for data_line in data:
+                #it's a broken data (has tag but no value)
                 if type(data_line[6]) == str and type(data_line[7]) != str:
                     continue
+
+                #tokenize context
                 texts = tokenizer.tokenize(data_line[1])
+
+                #tags, values: [tokenized tags...], [list of tokenized values]
                 tags, values = prepare_tags_and_values(data_line[6], data_line[7])
-
                 assert len(tags) == len(values)
-                if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
-                    datas.append({'text' : texts, 'tag' : tags, 'value' : values, 'pdf_id' : files[i].split('.')[0]})
-                else:
-                    datas[len(datas) - 1]['text'] += ['[SEP]'] + texts
-                    datas[len(datas) - 1]['tag'] += tags
-                    datas[len(datas) - 1]['value'] += values
 
-        tokenized_all_tag = [tokenizer.tokenize(tag) for tag in all_tag]
+                #add these samples into datas, change to next data if full/next file
+                if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
+                    datas.append({'text' : texts, 'tag' : tags, 'value' : values,
+                                'mask': [1] * len(texts), 'pdf_id' : files[i].split('.')[0]})
+                else:
+                    datas[-1]['text'] += ['[SEP]'] + texts
+                    datas[-1]['mask'] += [0] + [1] * len(texts)
+                    datas[-1]['tag'] += tags
+                    datas[-1]['value'] += values
+
+        #tokenized_all_tag = [tokenizer.tokenize(tag) for tag in all_tag]
         dataset = []
-        pick = 0
+
         for data in datas:
-            if len(data['tag']):
-                for i in range(len(data['tag'])):
-                    pos = find_position(data['text'], data['value'][i])
-                    if pos == None:
-                        continue
-                    value = data['value'][i]
-                    token = ['[CLS]'] + data['text'] + ['[SEP'] + data['tag'][i]
-                    len_text = len(data['text']) + 2
-                    len_tag = len(data['tag'][i])
-                    token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0)
-                    token_type = pad_to_len([0] * len_text + [1] * len_tag, 0)
-                    mask = pad_to_len([1] * (len_text + len_tag), 0)
-                    dataset.append({
-                        'token' : token,
-                        'token_type' : token_type,
-                        'mask' : mask,
-                        'tag' : data['tag'][i],
-                        'start' : pos[0],
-                        'end' : pos[1],
-                        'value' : value
-                    })
-            else:
-                tag = tokenized_all_tag[pick]
-                pick = (pick + 1) % 20
-                start = 0
-                end = 0
-                value = []
-                token = ['[CLS]'] + data['text'] + ['[SEP'] + tag
-                len_text = len(data['text']) + 2
-                len_tag = len(tag)
-                token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0)
-                token_type = pad_to_len([0] * len_text + [1] * len_tag, 0)
-                mask = pad_to_len([1] * (len_text + len_tag), 0)
-                dataset.append({
-                    'token' : token,
-                    'token_type' : token_type,
-                    'mask' : mask,
-                    'tag' : tag,
-                    'start' : start,
-                    'end' : end,
-                    'value' : value
-                })
+            #initialize each sample
+            token = pad_to_len(tokenizer.convert_tokens_to_ids(['[CLS]'] + data['text'] + ['[SEP]']), 0)
+            mask = pad_to_len([0] + data['mask'] + [0], 0)
+            token_type = pad_to_len([0], 0)
+            label = pad_to_len([0], 0)
+
+            for i in range(len(data['tag'])):
+                start, end = find_position(data['text'], data['value'][i])
+                if start == None:
+                    continue
+                label[start] = tag_to_label[data['tag'][i]]
+                label[start + 1: end + 1] = [tag_to_label[data['tag'][i]] + 20] * (end - start)
+                dataset.append({'token': token, 'token_type': token_type, 'mask': mask, 'label': label})
+                label = pad_to_len([0], 0)
+
+            if len(data['tag']) == 0:
+                dataset.append({'token': token, 'token_type': token_type, 'mask': mask, 'label': label})
+
+            #print
+            """
+            for d in dataset:
+                for a,c,d in zip(tokenizer.convert_ids_to_tokens(d['token']), d['mask'], [label_to_tag[l] for l in d['label']]):
+                    print(a,c,d)
+                print('-----------------')
+            """
+
         return dataset
     else:
         for i, data in enumerate(raw_datas):
