@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pickle
 import json
+from tqdm import tqdm
 
 all_tag = ['O', '調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
             '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
@@ -39,51 +40,6 @@ class create_dataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def collate_fn(self, data):
-        starts = []
-        ends = []
-        tokens = []
-        token_types = []
-        masks = []
-        tags = []
-        values = []
-        pdf_ids = []
-        sen_ids = []
-        if not data[0].get('start') == None:
-            for i in range(len(data)):
-                starts.append(data[i]['start'])
-                ends.append(data[i]['end'])
-                tokens.append(data[i]['token'])
-                token_types.append(data[i]['token_type'])
-                masks.append(data[i]['mask'])
-                tags.append(data[i]['tag'])
-                values.append(data[i]['value'])
-            return {
-                'start':torch.LongTensor(starts),
-                'end':torch.LongTensor(ends),
-                'token':torch.tensor(tokens),
-                'token_type':torch.tensor(token_types),
-                'mask':torch.tensor(masks),
-                'tag':tags,
-                'value':values,
-            }
-        else:
-            for i in range(len(data)):
-                tokens.append(data[i]['token'])
-                token_types.append(data[i]['token_type'])
-                masks.append(data[i]['mask'])
-                tags.append(data[i]['tag'])
-                pdf_ids.append(data[i]['pdf_id'])
-                sen_ids.append(data[i]['sen_id'])
-            return {
-                'token':torch.tensor(tokens),
-                'token_type':torch.tensor(token_types),
-                'mask':torch.tensor(masks),
-                'tag':tags,
-                'pdf_id':pdf_ids,
-                'sen_id':sen_ids
-            }
-
 def find_position(context, value):
     context_len = len(context)
     value_len = len(value)
@@ -95,6 +51,7 @@ def find_position(context, value):
             b = [value[j].strip('#') for j in range(value_len)]
             if ''.join(b) == ''.join(a):
                 return start+1, end
+    return None, None
 
 def prepare_tags_and_values(tags, values):
     if type(tags) != str:
@@ -130,112 +87,132 @@ def make_data(data_path, mode):
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
 
+    #first extract datas into a sample
+    print('loading data...')
     datas = []
-    if mode != 'test': #training set
-        for i, data in enumerate(raw_datas):
-            for data_line in data:
-                #it's a broken data (has tag but no value)
-                if type(data_line[6]) == str and type(data_line[7]) != str:
-                    continue
+    for i, data in enumerate(raw_datas):
+        for data_line in data:
+            #it's a broken data (has tag but no value)
+            if type(data_line[6]) == str and type(data_line[7]) != str:
+                continue
 
-                #tokenize context
-                texts = tokenizer.tokenize(data_line[1])
+            #tokenize context
+            texts = tokenizer.tokenize(data_line[1])
 
-                #tags, values: [tokenized tags...], [list of tokenized values]
-                tags, values = prepare_tags_and_values(data_line[6], data_line[7])
-                assert len(tags) == len(values)
+            #tags, values: [tokenized tags...], [list of tokenized values]
+            tags, values = prepare_tags_and_values(data_line[6], data_line[7])
+            assert len(tags) == len(values)
 
+            if mode != 'test': #training mode
                 #add these samples into datas, change to next data if full/next file
                 if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
-                    datas.append({'text' : texts, 'tag' : tags, 'value' : values,
-                                'mask': [1] * len(texts), 'pdf_id' : files[i].split('.')[0]})
+                    datas.append({
+                        'text' : texts,
+                        'tag' : tags,
+                        'value' : values,
+                        'mask': [1] * len(texts),
+                        'pdf_id' : files[i].split('.')[0]})
                 else:
                     datas[-1]['text'] += ['[SEP]'] + texts
                     datas[-1]['mask'] += [0] + [1] * len(texts)
                     datas[-1]['tag'] += tags
                     datas[-1]['value'] += values
 
-        #tokenized_all_tag = [tokenizer.tokenize(tag) for tag in all_tag]
-        dataset = []
-
-        for data in datas:
-            #initialize each sample
-            token = pad_to_len(tokenizer.convert_tokens_to_ids(['[CLS]'] + data['text'] + ['[SEP]']), 0)
-            mask = pad_to_len([0] + data['mask'] + [0], 0)
-            token_type = pad_to_len([0], 0)
-            label = pad_to_len([0], 0)
-
-            for i in range(len(data['tag'])):
-                start, end = find_position(data['text'], data['value'][i])
-                if start == None:
-                    continue
-                label[start] = tag_to_label[data['tag'][i]]
-                label[start + 1: end + 1] = [tag_to_label[data['tag'][i]] + 20] * (end - start)
-                dataset.append({'token': token, 'token_type': token_type, 'mask': mask, 'label': label})
-                label = pad_to_len([0], 0)
-
-            if len(data['tag']) == 0:
-                dataset.append({'token': token, 'token_type': token_type, 'mask': mask, 'label': label})
-
-            #print
-            """
-            for d in dataset:
-                for a,c,d in zip(tokenizer.convert_ids_to_tokens(d['token']), d['mask'], [label_to_tag[l] for l in d['label']]):
-                    print(a,c,d)
-                print('-----------------')
-            """
-
-        return dataset
-    else:
-        for i, data in enumerate(raw_datas):
-            for j, data_line in enumerate(data):
-                texts = tokenizer.tokenize(data_line[1])
+            else: #testing mode
                 if len(datas) == 0 or len(datas[-1]['text']) + len(texts) > config['text_max_len'] or files[i].split('.')[0] != datas[-1]['pdf_id']:
                     datas.append({
                         'text' : texts,
+                        'mask': [1] * len(texts),
                         'pdf_id' : files[i].split('.')[0],
-                        'sen_id' : [int(data_line[2])],
-                    })
+                        'sen_id' : [int(data_line[2])]
+                        })
                 else:
                     datas[-1]['text'] += ['[SEP]'] + texts
+                    datas[-1]['mask'] += [0] + [1] * len(texts)
                     datas[-1]['sen_id'].append(int(data_line[2]))
 
+    #generating dataset (padding, configuring other parameters)
+    print('data processing...')
+    dataset = []
+    for data in tqdm(datas):
+        #initialize each sample
+        context = ['[CLS]'] + data['text'] + ['[SEP]']
+        token = pad_to_len(tokenizer.convert_tokens_to_ids(context), 0)
+        mask = pad_to_len(len(context) * [1], 0)
+        token_type = pad_to_len([0], 0)
+        label = pad_to_len([0], 0)
 
-        tokenized_all_tag = [tokenizer.tokenize(tag) for tag in all_tag]
-        dataset = []
-        for data in datas:
-            for i in range(len(tokenized_all_tag)):
-                token = ['[CLS]'] + data['text'] + ['[SEP'] + tokenized_all_tag[i]
-                len_text = len(data['text']) + 2
-                len_tag = len(tokenized_all_tag[i])
-                token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0)
-                token_type = pad_to_len([0] * len_text + [1] * len_tag, 0)
-                mask = pad_to_len([1] * (len_text + len_tag), 0)
+        if mode != 'test':
+
+            for i in range(len(data['tag'])):
+                start, end = find_position(data['text'], data['value'][i])
+                if start == None or end == None:
+                    print('error text:{}\nvalue: {}'.format(data['text'], data['value']))
+                    continue
+                label[start] = tag_to_label[data['tag'][i]]
+                label[start + 1: end + 1] = [tag_to_label[data['tag'][i]] + 20] * (end - start)
                 dataset.append({
-                    'token' : token,
-                    'token_type' : token_type,
-                    'mask' : mask,
-                    'tag' : tokenized_all_tag[i],
-                    'pdf_id' : data['pdf_id'],
-                    'sen_id' : data['sen_id']
-                })
-        return dataset
+                    'token': torch.tensor(token),
+                    'token_type': torch.tensor(token_type),
+                    'mask': torch.tensor(mask),
+                    'label': torch.LongTensor(label)
+                    })
+                label = pad_to_len([0], 0)
+
+            if len(data['tag']) == 0:
+                dataset.append({
+                    'token': torch.tensor(token),
+                    'token_type': torch.tensor(token_type),
+                    'mask': torch.tensor(mask),
+                    'label': torch.LongTensor(label)
+                    })
+
+        else: #testing mode
+
+            dataset.append({
+                'token': torch.tensor(token),
+                'token_type': torch.tensor(token_type),
+                'mask': torch.tensor(mask),
+                'pdf_id' : data['pdf_id'],
+                'sen_id' : data['sen_id']})
+
+    return dataset
+
+def create_dataloader(data_path='./release/train/ca_data/', mode='train', batch_size=32, save=True, load=False):
+    if load:
+        print('./{}_dataloader.pt loaded.'.format(mode), flush=True)
+        dataloader = torch.load('./{}_dataloader.pt'.format(mode))
+        return dataloader
+
+    print('creating {} dataset...'.format(mode), flush=True)
+    dataset = make_data(data_path, mode)
+    dataloader = DataLoader(
+					dataset = dataset,
+					batch_size = batch_size,
+					shuffle = True,
+				)
+    if save:
+        torch.save(dataloader, './{}_dataloader.pt'.format(mode))
+    return dataloader
+
 
 if __name__ == '__main__':
     train_data_path = './release/train/ca_data/'
     dev_data_path = './release/dev/ca_data/'
 
-    train_data = make_data(train_data_path, 'train')
-    print(train_data)
-    print(len(train_data))
-    Train_dataset = create_dataset(train_data)
+    train_dataloader = create_dataloader(train_data_path, mode='train', batch_size=32)
+    dev_dataloader = create_dataloader(dev_data_path, mode='dev', batch_size=32)
 
-    dev_data = make_data(dev_data_path, 'dev')
-    print(dev_data)
-    print(len(dev_data))
-    Dev_dataset = create_dataset(dev_data)
-
-    with open('./train_dataset.pkl', 'wb') as f:
-        pickle.dump(Train_dataset, f)
-    with open('./dev_dataset.pkl', 'wb') as f:
-        pickle.dump(Dev_dataset, f)
+    print('------')
+    for batch in train_dataloader:
+        for key in batch.keys():
+            print(key,':', batch[key].shape)
+        break
+    print('-----')
+    for batch in dev_dataloader:
+        for key in batch.keys():
+            try:
+                print(key,':', batch[key].shape)
+            except AttributeError:
+                print(key, ':', batch[key][0])
+        break
