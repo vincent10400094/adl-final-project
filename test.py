@@ -1,129 +1,137 @@
-model_path = './checkpoint.15.pt'
 import torch
 from torch.utils.data import DataLoader, Dataset
 import pickle
 import json
 from statistics import mean
-from transformers import BertTokenizer, BertForQuestionAnswering
+from transformers import BertTokenizer, BertForTokenClassification
 from torch.nn import CrossEntropyLoss
 import math
 import time
 from tqdm import tqdm
-from dataset import create_dataset, make_data
+from dataset import make_data, create_dataloader, tokenizer, tag_to_label, label_to_tag
 import pandas as pd
 from pathlib import Path
 from argparse import ArgumentParser
 import os
 import csv
 
-parser = ArgumentParser()
-parser.add_argument('--test_data_path')
-parser.add_argument('--output_path')
-args = parser.parse_args()
+device = None
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased", do_lower_case = True)
-tokenizer.add_tokens(['～', 'Fax','１','２','３','４','５','６','７','８','９','０'])
-
-with open("./config.json") as f:
-    config = json.load(f)
-
-print('loading data...')
-dev_data = make_data(args.test_data_path, 'test')
-dev_dataset = create_dataset(dev_data)
-files = os.listdir(args.test_data_path)
-files.sort()
-files = [x.split('.')[0] for x in files]
-
-
-all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
-            '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
-            '資格申請締切日時', '入札書締切日時', '開札日時', '質問箇所所属/担当者', '質問箇所TEL/FAX', \
-            '資格申請送付先', '資格申請送付先部署/担当者名', '入札書送付先', '入札書送付先部署/担当者名', '開札場所']
-
-
-files_per_len_ans = {}
-# files_per_tag_ans = {}
-
-for file_name in files:
-    data = pd.read_excel(args.test_data_path+file_name+'.pdf.xlsx', encoding = 'big5')
-    raw_data = data.to_numpy()
-    files_per_len_ans[file_name] = {}
-    for i, data_line in enumerate(raw_data):
-        files_per_len_ans[file_name][int(data_line[2])] = []
-    # files_per_tag_ans[file_name] = [-10000] * 20
-
-dev_dataloader = DataLoader(
-                    dataset = dev_dataset,
-                    batch_size = 2,
-                    shuffle = False,
-                    collate_fn=dev_dataset.collate_fn
-                )
-
-def build_model():
-    model = BertForQuestionAnswering.from_pretrained("bert-base-multilingual-cased")
+def build_model(model_path = './best.pt'):
+    model = BertForTokenClassification.from_pretrained('bert-base-multilingual-cased', num_labels=40)
     model.resize_token_embeddings(len(tokenizer))
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'], amsgrad=True)
     model.to(device)
-    return model, optimizer
 
-def findans(start_score, end_score, token):
-    start, indice_start = torch.sort(start_score, descending = True)
-    end, indice_end = torch.sort(end_score, descending = True)
-    start_best = indice_start[0]
-    end_best = indice_end[0]
-    if end_best - start_best > 60 or end_best - start_best < 0:
-        score_1 = start[1] + end[0]
-        score_2 = start[0] + end[1]
-        score_3 = start[1] + end[1]
-        if score_1 > score_2 and score_1 > score_3 and 0 < indice_end[0] - indice_start[1] < 60:
-            start_best = indice_start[1]
-            end_best = indice_end[0]
-        elif score_2 > score_1 and score_2 > score_3 and 0 < indice_end[1] - indice_start[0] < 60:
-            start_best = indice_start[0]
-            end_best = indice_end[1]
-        elif  0 < indice_end[1] - indice_start[1] < 60:
-            start_best =  indice_start[1]
-            end_best = indice_end[1]
-    predict = token[start_best:end_best+1]
-    count_sep = predict.count('[SEP]')
-    if count_sep > 1:
-        predict = ''
-        return start_best, end_best, predict, -1
-    elif count_sep == 1:
-        if start_score[start_best] > end_score[end_best]:
-            end_best = start_best + predict.index('[SEP]') - 1
-            predict = token[start_best: end_best+1]
-        else:
-            start_best = start_best + predict.index('[SEP]') + 1
-            predict = token[start_best:end_best+1]
-    sen_id = [-1]
-    for i in range(len(token)):
-        if token[i] == '[SEP]':
-            sen_id.append(i)
-    sen_id.append(600)
-    tag_sen_id = 0
+    ckpt = torch.load(model_path, map_location=torch.device('cpu'))
+    model.load_state_dict(ckpt['state_dict'])
+    model.to(device)
 
-    for i in range(len(sen_id) - 1):
-        if start_best >= sen_id[i] and end_best <= sen_id[i+1]:
-            tag_sen_id = i
-            break
-    return start_best, end_best, predict, tag_sen_id
+    return model
 
-def test(model, devloader):
+def find_ans(files_per_len_ans, token, score, pdf_id, sen_ids):
+    prediction = []
+
+    #first, we find the sentence boundary of each sentence
+    context = tokenizer.convert_ids_to_tokens(token)
+    context_pos = 0
+    sen_to_pos = {}
+    print(sen_ids)
+    for i, c in enumerate(context):
+        print('({} : {}), '.format(c, i), end='')
+        if i % 5 == 0:
+            print('')
+    for sen_id in sen_ids: #shouldn't consider too much special case...
+        if sen_id == -1: break
+        while context[context_pos] != '[SEP]':
+            context_pos += 1
+        sen_to_pos[sen_id] = context_pos
+        #print('{}->{}'.format(sen_id, context_pos))
+        context_pos += 1
+
+    context_len = context_pos
+
+    #start iterate through each tag
+    threshold = 0.95
+
+    for tag_index in range(20): #each tag
+        score_per_tag = score[:, tag_index]
+        body_score = score[:, tag_index + 20]
+
+
+        score_pos = 0
+
+        #start seaching for some score > 0.5
+        while score_pos < context_len:
+            if score_per_tag[score_pos] <= threshold:
+                score_pos += 1
+                continue
+            else:
+                body_pos = score_pos + 1
+                while body_pos < context_len and body_score[body_pos] > threshold:
+                    body_pos += 1
+
+                #[score_pos, body_pos) is the prediction
+                if body_pos - score_pos >= 2: #valid answer
+
+                    #find sentence id
+                    sen_id = None
+                    for s_id, sep_pos in sen_to_pos.items():
+
+                        if sep_pos > score_pos:
+                            sen_id = s_id
+                            break
+
+                    #find predicted text
+                    predicted_text = context[score_pos: body_pos]
+                    #predicted_text = ''.join([t.strip('#') for t in predicted_text])
+
+
+                    print('pdf_id: {}, sen_id: {}, predicted_text: {}, tag:{}, [{},{})'.format(
+                            pdf_id, sen_id, predicted_text, label_to_tag[tag_index], score_pos, body_pos))
+                    print('score: {}, {}\n------'.format(score_per_tag[score_pos], body_score[score_pos + 1: body_pos]))
+
+                score_pos = body_pos
+
+
+    #print('complete iterating through each tag', flush=True)
+
+
+
+def predict(model, dataloader, files_per_len_ans, dev=False):
     model.eval()
     predict = {}
     answerable_acc = 0
-    softmax = torch.nn.Softmax(dim = -1)
+    sigmoid = torch.nn.Sigmoid()
     now_pdf = 0
-    count_to_20 = 0
     now_sen = []
-    for batch in tqdm(devloader):
-        start_scores, end_scores = model(
-                batch['token'].to(device), 
-                attention_mask = batch['mask'].to(device), 
-                token_type_ids = batch['token_type'].to(device), 
-            )
+
+    for batch in tqdm(dataloader):
+
+        #calculate score of each token
+        token = batch['token'].to(device)
+        token_type = batch['token_type'].to(device)
+        mask = batch['mask'].to(device)
+        if dev:
+            label = batch['label']
+        else:
+            pdf_id = batch['pdf_id']
+            sen_id = [id.tolist() for id in batch['sen_id']]
+            sen_id = list(zip(*sen_id))
+
+
+        scores = model(token, attention_mask=mask, token_type_ids=token_type)[0]
+        padding_mask = ~mask.bool()
+        scores[padding_mask] = -1e3
+
+        scores = sigmoid(scores)
+        #score: (B x 512 x 40)
+
+
+        for b in range(scores.size(0)):
+            find_ans(files_per_len_ans, token[b], scores[b], pdf_id[b], sen_id[b])
+        exit()
+        '''
         for i in range(0, len(batch['mask'])):
             unanswerable = ((softmax(start_scores[i])[0] + softmax(end_scores[i])[0]) / 2).item()
             if unanswerable > 2e-7:
@@ -135,15 +143,15 @@ def test(model, devloader):
                 all_tokens = tokenizer.convert_ids_to_tokens(batch['token'][i])
                 buttom = batch['token_type'][i].tolist().index(1) - 1
                 start_best, end_best, predict, sen_id = findans(start_scores[i][1:buttom], end_scores[i][1:buttom], all_tokens[1:buttom])
-                
+
                 tag = ''.join(batch['tag'][i])
                 count_sep = predict.count('[SEP]')
-                
+
                 prediction = ''.join([x.strip('#') for x in predict])
                 # print('tag : ', tag)
                 # print('predict :', prediction)
-            
-            
+
+
             # print(files_per_len_ans[batch['pdf_id'][i]])
             if len(prediction) != 0:
                 files_per_len_ans[batch['pdf_id'][i]][batch['sen_id'][i][sen_id]].append(all_tag[count_to_20]+':'+prediction)
@@ -152,31 +160,73 @@ def test(model, devloader):
         # break
     # output_file = Path(args.output_path)
     # output_file.write_text(json.dumps(predict))
-    
+    '''
 
-model, optimizer = build_model()
-print('loading model...')
-ckpt = torch.load(model_path)
-model.load_state_dict(ckpt['state_dict'])
-print('predicting...')
-test(model, dev_dataloader)
+def main(args, config):
 
-# print(files_per_len_ans)
+    #creating dataset
+    print('loading data...')
+    predict_dataloader = create_dataloader(args.test_data_path, mode='test', batch_size=config['batch_size'], load=False)
+    '''
+    for batch in predict_dataloader:
+        context = batch['context']
+        context = list(zip(*context))
+    '''
 
-with open(args.output_path, mode='w', newline='') as submit_file:
-    csv_writer = csv.writer(submit_file)
-    header = ['ID', 'Prediction']
-    # print(header)
-    csv_writer.writerow(header)
-    for pdf_id in files:
-        for key in sorted(files_per_len_ans[pdf_id].keys()):
-            row_id = pdf_id+'-'+'{0}'.format(key)
-            prediction = ''
-            for tag_value in files_per_len_ans[pdf_id][key]:
-                prediction += tag_value+' '
-            if len(prediction) == 0:
-                prediction = 'NONE'
-            row = [row_id, prediction]
-            csv_writer.writerow(row)
-print('finish predicting!')
-    
+    files = os.listdir(args.test_data_path)
+    files.sort()
+    files = [x.split('.')[0] for x in files if not x.startswith('.')]
+
+    all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
+                '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
+                '資格申請締切日時', '入札書締切日時', '開札日時', '質問箇所所属/担当者', '質問箇所TEL/FAX', \
+                '資格申請送付先', '資格申請送付先部署/担当者名', '入札書送付先', '入札書送付先部署/担当者名', '開札場所']
+
+
+    #initialize this (for storing answer)
+    files_per_len_ans = {}
+    for file_name in files:
+        data = pd.read_excel(args.test_data_path+file_name+'.pdf.xlsx', encoding = 'big5')
+        raw_data = data.to_numpy()
+        files_per_len_ans[file_name] = {}
+        for i, data_line in enumerate(raw_data):
+            files_per_len_ans[file_name][int(data_line[2])] = []
+
+    print('loading model...')
+    model = build_model()
+
+    print('predicting...')
+    files_per_len_ans = predict(model, predict_dataloader, files_per_len_ans)
+
+    # print(files_per_len_ans)
+
+    with open(args.output_path, mode='w', newline='') as submit_file:
+        csv_writer = csv.writer(submit_file)
+        header = ['ID', 'Prediction']
+        # print(header)
+        csv_writer.writerow(header)
+        for pdf_id in files:
+            for key in sorted(files_per_len_ans[pdf_id].keys()):
+                row_id = pdf_id+'-'+'{0}'.format(key)
+                prediction = ''
+                for tag_value in files_per_len_ans[pdf_id][key]:
+                    prediction += tag_value+' '
+                if len(prediction) == 0:
+                    prediction = 'NONE'
+                row = [row_id, prediction]
+                csv_writer.writerow(row)
+    print('finish predicting!')
+
+if __name__ == '__main__':
+
+    parser = ArgumentParser()
+    parser.add_argument('--test_data_path', default='release/dev/ca_data/', type=str)
+    parser.add_argument('--output_path', default='output.csv', type=str)
+    args = parser.parse_args()
+
+    device = torch.device("cuda:{}".format(config['gpus']) if torch.cuda.is_available() else "cpu")
+
+    with open("./config.json") as f:
+        config = json.load(f)
+
+    main(args, config)

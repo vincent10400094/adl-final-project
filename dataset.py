@@ -11,17 +11,20 @@ import pickle
 import json
 from tqdm import tqdm
 
-all_tag = ['O', '調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
+all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
             '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
             '資格申請締切日時', '入札書締切日時', '開札日時', '質問箇所所属/担当者', '質問箇所TEL/FAX', \
             '資格申請送付先', '資格申請送付先部署/担当者名', '入札書送付先', '入札書送付先部署/担当者名', '開札場所']
+tag_num = len(all_tag)
+tag_pos_cnt = [0 for i in range(tag_num * 2)]
+total_token_cnt = 0
 tag_to_label = {text: i for i, text in enumerate(all_tag)}
-label_to_tag = {i: text for i, text in enumerate(all_tag + ['I-' + tag for tag in all_tag[1:]])}
+label_to_tag = {i: text for i, text in enumerate(all_tag + ['I-' + tag for tag in all_tag])}
 
-never_split_list = []
+never_split_list = ['の']
 tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased", do_lower_case = True, never_split = never_split_list)
 full_char = 'Ａ Ｂ Ｃ Ｄ Ｅ Ｆ Ｇ Ｈ Ｉ Ｊ Ｋ Ｌ Ｍ Ｎ Ｏ Ｐ Ｑ Ｒ Ｓ Ｔ Ｕ Ｖ Ｗ Ｘ Ｙ Ｚ'.split()
-tokenizer.add_tokens(['～','―', '‐', 'Fax','１','２','３','４','５','６','７','８','９','０'] + full_char)
+tokenizer.add_tokens(['～','―', '‐', 'Fax','１','２','３','４','５','６','７','８','９','０', 'の'] + full_char)
 
 # [CLS] : 101
 # [SEP] : 102
@@ -70,19 +73,18 @@ def prepare_tags_and_values(tags, values):
             values[i] = tokenizer.tokenize(values[i])
         return tags, values
 
-def pad_to_len(seq,padding):
-    to_len = 512
+def pad_to_len(seq,padding, to_len=512):
     padded = seq + [padding] * max(0, to_len - len(seq))
     return padded
 
-def make_data(data_path, mode):
+def make_data(data_path, mode, count=False):
     files = os.listdir(data_path)
     files.sort()
     raw_datas = []
 
     for file_name in files:
         if file_name.startswith('.'): continue
-
+        print(data_path, file_name)
         data = pd.read_excel(data_path+file_name, encoding = 'big5')
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
@@ -136,63 +138,65 @@ def make_data(data_path, mode):
     dataset = []
     for data in tqdm(datas):
         #initialize each sample
+        #print(data['text'])
         context = ['[CLS]'] + data['text'] + ['[SEP]']
         token = pad_to_len(tokenizer.convert_tokens_to_ids(context), 0)
         mask = pad_to_len(len(context) * [1], 0)
         token_type = pad_to_len([0], 0)
-        label = pad_to_len([0], 0)
+        label = torch.zeros(512, 2 * tag_num)
 
-        if mode != 'test':
+        if mode != 'test': #training mode
 
             for i in range(len(data['tag'])):
                 start, end = find_position(data['text'], data['value'][i])
                 if start == None or end == None:
                     print('error text:{}\nvalue: {}'.format(data['text'], data['value']))
                     continue
-                label[start] = tag_to_label[data['tag'][i]]
-                label[start + 1: end + 1] = [tag_to_label[data['tag'][i]] + 20] * (end - start)
-                dataset.append({
-                    'token': torch.tensor(token),
-                    'token_type': torch.tensor(token_type),
-                    'mask': torch.tensor(mask),
-                    'label': torch.LongTensor(label)
-                    })
-                label = pad_to_len([0], 0)
+                this_tag = tag_to_label[data['tag'][i]]
+                label[start][this_tag] = 1.
+                label[start + 1: end + 1, this_tag + tag_num] =  1.
+                if count:
+                    tag_pos_cnt[this_tag] += 1
+                    tag_pos_cnt[this_tag + 20] += (end - start)
 
-            if len(data['tag']) == 0:
-                dataset.append({
-                    'token': torch.tensor(token),
-                    'token_type': torch.tensor(token_type),
-                    'mask': torch.tensor(mask),
-                    'label': torch.LongTensor(label)
-                    })
-
-        else: #testing mode
+            if count:
+                global total_token_cnt
+                total_token_cnt += len(data['text'])
 
             dataset.append({
                 'token': torch.tensor(token),
                 'token_type': torch.tensor(token_type),
                 'mask': torch.tensor(mask),
+                'label': label
+                })
+
+        else: #testing mode
+            sen_id = pad_to_len(data['sen_id'], -1, to_len=30)
+            dataset.append({
+                'token': torch.tensor(token),
+                'token_type': torch.tensor(token_type),
+                'mask': torch.tensor(mask),
                 'pdf_id' : data['pdf_id'],
-                'sen_id' : data['sen_id']})
+                'sen_id' : sen_id})
 
     return dataset
 
-def create_dataloader(data_path='./release/train/ca_data/', mode='train', batch_size=32, save=True, load=False):
+def create_dataloader(data_path='./release/train/ca_data/', mode='train', batch_size=32, save=True, load=False, count=False):
     if load:
         print('./{}_dataloader.pt loaded.'.format(mode), flush=True)
         dataloader = torch.load('./{}_dataloader.pt'.format(mode))
         return dataloader
 
     print('creating {} dataset...'.format(mode), flush=True)
-    dataset = make_data(data_path, mode)
+    dataset = make_data(data_path, mode, count=count)
     dataloader = DataLoader(
 					dataset = dataset,
 					batch_size = batch_size,
-					shuffle = True,
+					shuffle = False if mode == 'test' else True,
 				)
     if save:
         torch.save(dataloader, './{}_dataloader.pt'.format(mode))
+
     return dataloader
 
 
@@ -200,14 +204,22 @@ if __name__ == '__main__':
     train_data_path = './release/train/ca_data/'
     dev_data_path = './release/dev/ca_data/'
 
-    train_dataloader = create_dataloader(train_data_path, mode='train', batch_size=32)
-    dev_dataloader = create_dataloader(dev_data_path, mode='dev', batch_size=32)
+    train_dataloader = create_dataloader(train_data_path, mode='train', batch_size=4, count=True, load=False)
+    dev_dataloader = create_dataloader(dev_data_path, mode='dev', batch_size=4, load=False)
 
+    for i, cnt in enumerate(tag_pos_cnt):
+        #print('{}: {}/{} = {}'.format(label_to_tag[i], cnt, total_token_cnt, cnt / total_token_cnt))
+        print(total_token_cnt // cnt, end=', ')
+
+    cnt = 0
     print('------')
+    """
     for batch in train_dataloader:
         for key in batch.keys():
             print(key,':', batch[key].shape)
-        break
+        cnt += 1
+        if cnt > 4:break
+
     print('-----')
     for batch in dev_dataloader:
         for key in batch.keys():
@@ -216,3 +228,4 @@ if __name__ == '__main__':
             except AttributeError:
                 print(key, ':', batch[key][0])
         break
+    """
