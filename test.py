@@ -29,24 +29,20 @@ def build_model(model_path = './best.pt'):
 
     return model
 
-def find_ans(files_per_len_ans, token, score, pdf_id, sen_ids):
+def find_ans(token, score, pdf_id, sen_ids):
     prediction = []
 
     #first, we find the sentence boundary of each sentence
     context = tokenizer.convert_ids_to_tokens(token)
     context_pos = 0
     sen_to_pos = {}
-    print(sen_ids)
-    for i, c in enumerate(context):
-        print('({} : {}), '.format(c, i), end='')
-        if i % 5 == 0:
-            print('')
+
     for sen_id in sen_ids: #shouldn't consider too much special case...
         if sen_id == -1: break
         while context[context_pos] != '[SEP]':
             context_pos += 1
         sen_to_pos[sen_id] = context_pos
-        #print('{}->{}'.format(sen_id, context_pos))
+
         context_pos += 1
 
     context_len = context_pos
@@ -57,7 +53,6 @@ def find_ans(files_per_len_ans, token, score, pdf_id, sen_ids):
     for tag_index in range(20): #each tag
         score_per_tag = score[:, tag_index]
         body_score = score[:, tag_index + 20]
-
 
         score_pos = 0
 
@@ -84,29 +79,26 @@ def find_ans(files_per_len_ans, token, score, pdf_id, sen_ids):
 
                     #find predicted text
                     predicted_text = context[score_pos: body_pos]
-                    #predicted_text = ''.join([t.strip('#') for t in predicted_text])
+                    predicted_text = ''.join([t.strip('#') for t in predicted_text])
 
+                    #print('pdf_id: {}, sen_id: {}, predicted_text: {}, tag:{}, [{},{})'.format(
+                    #        pdf_id, sen_id, predicted_text, label_to_tag[tag_index], score_pos, body_pos))
+                    #print('score: {}, {}\n------'.format(score_per_tag[score_pos], body_score[score_pos + 1: body_pos]))
 
-                    print('pdf_id: {}, sen_id: {}, predicted_text: {}, tag:{}, [{},{})'.format(
-                            pdf_id, sen_id, predicted_text, label_to_tag[tag_index], score_pos, body_pos))
-                    print('score: {}, {}\n------'.format(score_per_tag[score_pos], body_score[score_pos + 1: body_pos]))
+                    prediction.append((pdf_id, sen_id, label_to_tag[tag_index], predicted_text))
 
                 score_pos = body_pos
-
-
     #print('complete iterating through each tag', flush=True)
+    return prediction
 
 
 
-def predict(model, dataloader, files_per_len_ans, dev=False):
+def predict(model, dataloader, dev=False):
     model.eval()
-    predict = {}
-    answerable_acc = 0
     sigmoid = torch.nn.Sigmoid()
-    now_pdf = 0
-    now_sen = []
+    predictions = []
 
-    for batch in tqdm(dataloader):
+    for i, batch in enumerate(dataloader):
 
         #calculate score of each token
         token = batch['token'].to(device)
@@ -127,51 +119,19 @@ def predict(model, dataloader, files_per_len_ans, dev=False):
         scores = sigmoid(scores)
         #score: (B x 512 x 40)
 
-
         for b in range(scores.size(0)):
-            find_ans(files_per_len_ans, token[b], scores[b], pdf_id[b], sen_id[b])
-        exit()
-        '''
-        for i in range(0, len(batch['mask'])):
-            unanswerable = ((softmax(start_scores[i])[0] + softmax(end_scores[i])[0]) / 2).item()
-            if unanswerable > 2e-7:
-                tag = ''.join(batch['tag'][i])
-                prediction = ''
-                # print('tag : ', tag)
-                # print('predict :')
-            else:
-                all_tokens = tokenizer.convert_ids_to_tokens(batch['token'][i])
-                buttom = batch['token_type'][i].tolist().index(1) - 1
-                start_best, end_best, predict, sen_id = findans(start_scores[i][1:buttom], end_scores[i][1:buttom], all_tokens[1:buttom])
-
-                tag = ''.join(batch['tag'][i])
-                count_sep = predict.count('[SEP]')
-
-                prediction = ''.join([x.strip('#') for x in predict])
-                # print('tag : ', tag)
-                # print('predict :', prediction)
+            predicted = find_ans(token[b], scores[b], pdf_id[b], sen_id[b])
+            print('batch {}/{}'.format(i, len(dataloader)), predicted, flush=True)
+            predictions.extend(predicted)
+    return predictions
 
 
-            # print(files_per_len_ans[batch['pdf_id'][i]])
-            if len(prediction) != 0:
-                files_per_len_ans[batch['pdf_id'][i]][batch['sen_id'][i][sen_id]].append(all_tag[count_to_20]+':'+prediction)
-            count_to_20 += 1
-            count_to_20 %= 20
-        # break
-    # output_file = Path(args.output_path)
-    # output_file.write_text(json.dumps(predict))
-    '''
 
 def main(args, config):
 
     #creating dataset
     print('loading data...')
     predict_dataloader = create_dataloader(args.test_data_path, mode='test', batch_size=config['batch_size'], load=False)
-    '''
-    for batch in predict_dataloader:
-        context = batch['context']
-        context = list(zip(*context))
-    '''
 
     files = os.listdir(args.test_data_path)
     files.sort()
@@ -182,8 +142,6 @@ def main(args, config):
                 '資格申請締切日時', '入札書締切日時', '開札日時', '質問箇所所属/担当者', '質問箇所TEL/FAX', \
                 '資格申請送付先', '資格申請送付先部署/担当者名', '入札書送付先', '入札書送付先部署/担当者名', '開札場所']
 
-
-    #initialize this (for storing answer)
     files_per_len_ans = {}
     for file_name in files:
         data = pd.read_excel(args.test_data_path+file_name+'.pdf.xlsx', encoding = 'big5')
@@ -196,7 +154,10 @@ def main(args, config):
     model = build_model()
 
     print('predicting...')
-    files_per_len_ans = predict(model, predict_dataloader, files_per_len_ans)
+    predictions = predict(model, predict_dataloader)
+    print(predictions)
+    for (pdf_id, sen_id, tag_name, predicted_text) in predictions:
+        files_per_len_ans[pdf_id][sen_id].append(tag_name + ':' + predicted_text)
 
     # print(files_per_len_ans)
 
