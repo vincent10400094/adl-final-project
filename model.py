@@ -18,20 +18,25 @@ class Bert(BertForQuestionAnswering):
         self.qa_outputs = nn.Linear(config.hidden_size, self.config.num_labels)
         # self.is_answeable = nn.Linear(config.hidden_size, 1)
         self.init_weights()
-        self.conv1d = nn.Conv1d(config.hidden_size, 768, 3, stride=1, padding=1)
+        self.conv1d = nn.Conv1d(config.hidden_size, 768, 5, stride=1, padding=2)
         self.config = config
 
-    def forward(self, token, attention_mask, token_type_ids, start_positions, end_positions):
+        self.logsoftmax = nn.LogSoftmax(dim=0)
+
+    def cross_entropy(self, pred, soft_targets):
+        return torch.sum(- soft_targets * self.logsoftmax(pred), 0)
+
+    def forward(self, token, attention_mask, token_type_ids, start_positions, end_positions, sen_cls):
         outputs = self.bert(token, attention_mask = attention_mask, token_type_ids = token_type_ids)
-        
+
         output = outputs[0]
         # print(self.config.hidden_size)
-        
+
         output = output.permute(0,2,1).contiguous()
         output = output[:,:, :Config['text_max_len']]
         output = self.conv1d(output)
         output = output.permute(0,2,1).contiguous()
-        
+
         pos = self.qa_outputs(output)
         start, end = pos.split(1, dim=-1)
         ans_start_predict = start.squeeze(-1)
@@ -41,20 +46,23 @@ class Bert(BertForQuestionAnswering):
                 start_positions = start_positions.squeeze(-1)
             if len(end_positions.size()) > 1:
                 end_positions = end_positions.squeeze(-1)
+            #print('ans_start_predict: {}, start_positions: {}'.format(ans_start_predict.shape, start_positions.shape))
 
-            ignored_index = ans_start_predict.size(1)
-            start_positions.clamp_(0, ignored_index)
-            end_positions.clamp_(0, ignored_index)
+            loss, total_cnt = 0, 0
+            for b in range(len(sen_cls)):
+                for start, end in sen_cls[b]:
+                    #print(start, end)
+                    #print(ans_start_predict[b][start:end+1])
+                    #print(start_positions[b][start:end+1])
+                    #print('-----')
+                    start_loss = self.cross_entropy(ans_start_predict[b][start:end+1], start_positions[b][start:end+1])
+                    end_loss = self.cross_entropy(ans_end_predict[b][start:end+1], end_positions[b][start:end+1])
 
-            loss_fct = CrossEntropyLoss(ignore_index=ignored_index)
-            # print(ans_start_predict.shape)
-            # print(ans_end_predict.shape)
-            # print(ans_start.shape)
-            # print(ans_end.shape)
-            loss_fn = CrossEntropyLoss()
-            start_loss = loss_fn(ans_start_predict, start_positions)
-            end_loss = loss_fn(ans_end_predict, end_positions)
-            return (start_loss + end_loss) / 2, ans_start_predict, ans_end_predict
+                    loss += (start_loss + end_loss)
+                    total_cnt += 2
+            #print(loss_list)
+            loss = loss / total_cnt
+            return loss, ans_start_predict, ans_end_predict
         else:
             return 0, ans_start_predict, ans_end_predict
 
@@ -63,11 +71,11 @@ class Bert(BertForQuestionAnswering):
 #       model = Bert.from_pretrained("bert-base-chinese")
 #   def forward(self, batch):
 #       loss, start_scores, end_scores, answerable = model(
-#               batch['token'].to(device), 
-#               mask = batch['mask'].to(device), 
-#               token_type_id = batch['token_type'].to(device), 
-#               ans_start = batch['ans_start'].to(device), 
-#               ans_end = batch['ans_end'].to(device), 
+#               batch['token'].to(device),
+#               mask = batch['mask'].to(device),
+#               token_type_id = batch['token_type'].to(device),
+#               ans_start = batch['ans_start'].to(device),
+#               ans_end = batch['ans_end'].to(device),
 #               answerable = batch['answerable'].to(device)
 #           )
 #       return {'loss':loss}
