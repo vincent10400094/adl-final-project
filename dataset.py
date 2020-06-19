@@ -20,8 +20,9 @@ label_to_tag = {i: text for i, text in enumerate(all_tag)}
 translate = lambda x : ''.join(i.strip('#') for i in x)
 
 never_split_list = []
-tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
-tokenizer.add_tokens(['～', 'Fax','１','２','３','４','５','６','７','８','９','０', 'ＦＡＸ', 'ＴＥＬ'])
+tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased", do_lower_case = False, never_split = never_split_list)
+full_char = 'Ａ Ｂ Ｃ Ｄ Ｅ Ｆ Ｇ Ｈ Ｉ Ｊ Ｋ Ｌ Ｍ Ｎ Ｏ Ｐ Ｑ Ｒ Ｓ Ｔ Ｕ Ｖ Ｗ Ｘ Ｙ Ｚ'.split()
+tokenizer.add_tokens(['～','―', '‐', 'Fax','１','２','３','４','５','６','７','８','９','０', 'FAX', 'TEL'] + full_char)
 
 # [CLS] : 101
 # [SEP] : 102
@@ -266,7 +267,7 @@ def make_data(data_path, mode):
                     'token_type' : token_type,
                     'mask' : mask,
                     'sen_cls' : sen_cls,
-                    'tag': [tag_index],
+                    'tag': tag_index,
                     'pdf_id' : data['pdf_id'],
                     'sen_id' : data['sen_id']
                 })
@@ -282,19 +283,19 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(
     					dataset = train_dataset,
     					batch_size = 4,
-    					shuffle = False,
+    					shuffle = True,
                         collate_fn=train_dataset.collate_fn
     				)
 
-    dev_data = make_data(dev_data_path, mode='test')
+    dev_data = make_data(dev_data_path, mode='dev')
     dev_dataset = MyDataset(dev_data)
     dev_dataloader = DataLoader(
     					dataset = dev_dataset,
     					batch_size = 4,
-    					shuffle = False,
+    					shuffle = True,
                         collate_fn=dev_dataset.collate_fn
     				)
-
+    '''
     for batch in train_dataloader:
         print(batch)
         print('-----')
@@ -302,6 +303,7 @@ if __name__ == '__main__':
     for batch in dev_dataloader:
         print(batch)
         break
+    '''
 
 
     with open('./train_dataset_cnn.pkl', 'wb') as f:
