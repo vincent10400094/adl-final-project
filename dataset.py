@@ -143,25 +143,31 @@ def make_data(data_path, mode, count=False):
         token = pad_to_len(tokenizer.convert_tokens_to_ids(context), 0)
         mask = pad_to_len(len(context) * [1], 0)
         token_type = pad_to_len([0], 0)
-        label = torch.zeros(512, 2 * tag_num)
 
         if mode != 'test': #training mode
+
+            label = torch.zeros(tag_num + 20, 512)
+            occured_tags = {i for i in range(tag_num)}
 
             for i in range(len(data['tag'])):
                 start, end = find_position(data['text'], data['value'][i])
                 if start == None or end == None:
                     print('error text:{}\nvalue: {}'.format(data['text'], data['value']))
                     continue
-                this_tag = tag_to_label[data['tag'][i]]
-                label[start][this_tag] = 1.
-                label[start + 1: end + 1, this_tag + tag_num] =  1.
-                if count:
-                    tag_pos_cnt[this_tag] += 1
-                    tag_pos_cnt[this_tag + 20] += (end - start)
 
-            if count:
-                global total_token_cnt
-                total_token_cnt += len(data['text'])
+                this_tag = tag_to_label[data['tag'][i]]
+                label[this_tag][start] = 1.
+                label[this_tag + 20][end] =  1.
+                try:
+                    occured_tags.remove(this_tag)
+                    print('{} - ({}, {}) added'.format(this_tag, start, end))
+                except KeyError:
+                    print('{} - ({}, {}) repeated'.format(this_tag, start, end))
+                    pass
+
+            for not_occured_tag in occured_tags:
+                label[not_occured_tag][0] = 1.
+                label[not_occured_tag + 20][0] = 1.
 
             dataset.append({
                 'token': torch.tensor(token),
