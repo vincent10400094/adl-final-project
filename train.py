@@ -12,7 +12,7 @@ from tqdm import tqdm
 from dataset import MyDataset, tokenizer
 import os
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = None
 
 def build_model():
 	model = Bert.from_pretrained("bert-base-multilingual-cased")
@@ -76,6 +76,8 @@ if __name__ == '__main__':
 		train_dataset = pickle.load(f)
 	with open("./dev_dataset_cnn.pkl", 'rb') as f:
 		dev_dataset = pickle.load(f)
+
+	device = torch.device("cuda:{}".format(config['gpus']) if torch.cuda.is_available() else "cpu")
 
 	train_dataloader = DataLoader(
 						dataset = train_dataset,

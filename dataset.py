@@ -125,6 +125,7 @@ def make_data(data_path, mode):
     files.sort()
     raw_datas = []
     for file_name in files:
+        if file_name.startswith('.') continue
         data = pd.read_excel(data_path+file_name, encoding = 'big5')
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
