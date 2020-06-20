@@ -9,6 +9,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import pickle
 import json
+import random
 
 all_tag = ['調達年度', '都道府県', '入札件名', '施設名', '需要場所(住所)', \
             '調達開始日', '調達終了日', '公告日', '仕様書交付期限', '質問票締切日時', \
@@ -116,6 +117,7 @@ def pad_to_len(seq, padding, to_len):
     return padded   
 
 def make_data(data_path, mode):
+    answerable = 0
     files = os.listdir(data_path)
     files.sort()
     raw_datas = []
@@ -147,13 +149,14 @@ def make_data(data_path, mode):
         for data in datas:
             if len(data['tag']):
                 for i in range(len(data['tag'])):
+                    answerable += 1
                     pos = find_position(data['text'], data['value'][i])
                     if pos == None:
                         continue
                     value = data['value'][i]
                     text = pad_to_len(data['text'], '[PAD]', config['text_max_len'] - 2)
                     # text = data['text']
-                    token = ['[CLS]'] + text + ['[SEP'] + data['tag'][i] + ['[SEP']
+                    token = ['[CLS]'] + text + ['[SEP]'] + data['tag'][i] + ['[SEP]']
                     len_text = len(text) + 2
                     len_tag = len(data['tag'][i]) + 1
                     token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0, 512)
@@ -168,18 +171,19 @@ def make_data(data_path, mode):
                         'end' : pos[1],
                         'value' : value
                     })
-            else:
-            # n_tag = [tag for tag in tokenized_all_tag if tag not in data['tag']]
-
-            # for tag in n_tag:
-                tag = tokenized_all_tag[pick]
-                pick = (pick + 1) % 20
+            n_tag = [tag for tag in tokenized_all_tag if tag not in data['tag']]
+            random.shuffle(n_tag)
+            # else:
+            for j in range(len(n_tag)):
+                # tag = tokenized_all_tag[pick]
+                tag = n_tag[j]
+                # pick = (pick + 1) % 20
                 start = 0
                 end = 0
                 value = []
                 text = pad_to_len(data['text'], '[PAD]', config['text_max_len'] - 2)
                 # text = data['text']
-                token = ['[CLS]'] + text + ['[SEP'] + tag + ['[SEP']
+                token = ['[CLS]'] + text + ['[SEP]'] + tag + ['[SEP]']
                 len_text = len(text) + 2
                 len_tag = len(tag) + 1
                 token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0, 512)
@@ -194,6 +198,7 @@ def make_data(data_path, mode):
                     'end' : end,
                     'value' : value
                 })
+        print(answerable)
         return dataset
     else:
         for i, data in enumerate(raw_datas):
@@ -216,8 +221,8 @@ def make_data(data_path, mode):
             for i in range(len(tokenized_all_tag)):
                 text = pad_to_len(data['text'], '[PAD]', config['text_max_len'] - 2)
                 # text = data['text']
-                token = ['[CLS]'] + text + ['[SEP'] + tokenized_all_tag[i] + ['[SEP']
-                len_text = len(data['text']) + 2
+                token = ['[CLS]'] + text + ['[SEP]'] + tokenized_all_tag[i] + ['[SEP]']
+                len_text = len(text) + 2
                 len_tag = len(tokenized_all_tag[i]) + 1
                 token = pad_to_len(tokenizer.convert_tokens_to_ids(token), 0, 512)
                 token_type = pad_to_len([0] * len_text + [1] * len_tag, 0, 512)
