@@ -1,6 +1,6 @@
 {
-    "batch_size":4,
-    "epoch":20,
+    "batch_size":3,
+    "epoch":50,
     "lr":3e-5,
     "text_max_len":383,
     "gpus":"0"

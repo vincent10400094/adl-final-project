@@ -123,9 +123,10 @@ def pad_to_len(seq, padding, to_len):
 def make_data(data_path, mode):
     files = os.listdir(data_path)
     files.sort()
+    print('files:', files)
     raw_datas = []
+    files = [file for file in files if not file.startswith('.')]
     for file_name in files:
-        if file_name.startswith('.') continue
         data = pd.read_excel(data_path+file_name, encoding = 'big5')
         raw_data = data.to_numpy()
         raw_datas.append(raw_data)
@@ -210,22 +211,22 @@ def make_data(data_path, mode):
 
                 context = tokenizer.convert_ids_to_tokens(token)
 
-                if len(tag_pos_dict[tag_index]):
-                    """
-                    print('========================= tag: {} ==============================='.format(label_to_tag[tag_index]))
-                    for i in range(0, 512, 10):
-                        print(context[i:i+10])
-                        print(start[i:i+10])
-                        print(end[i: i+10])
-                    """
-                    dataset.append({
-                        'token' : token,
-                        'token_type' : token_type,
-                        'mask' : mask,
-                        'sen_cls' : sen_cls,
-                        'start' : start,
-                        'end' : end,
-                    })
+                #if len(tag_pos_dict[tag_index]):
+                """
+                print('========================= tag: {} ==============================='.format(label_to_tag[tag_index]))
+                for i in range(0, 512, 10):
+                    print(context[i:i+10])
+                    print(start[i:i+10])
+                    print(end[i: i+10])
+                """
+                dataset.append({
+                    'token' : token,
+                    'token_type' : token_type,
+                    'mask' : mask,
+                    'sen_cls' : sen_cls,
+                    'start' : start,
+                    'end' : end,
+                })
         return dataset
 
     else: #testing mode

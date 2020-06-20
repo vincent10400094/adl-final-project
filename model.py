@@ -26,7 +26,7 @@ class Bert(BertForQuestionAnswering):
     def cross_entropy(self, pred, soft_targets):
         return torch.sum(- soft_targets * self.logsoftmax(pred), 0)
 
-    def forward(self, token, attention_mask, token_type_ids, start_positions, end_positions, sen_cls):
+    def forward(self, token, attention_mask, token_type_ids, start_positions = None, end_positions = None, sen_cls = None):
         outputs = self.bert(token, attention_mask = attention_mask, token_type_ids = token_type_ids)
 
         output = outputs[0]
@@ -41,7 +41,8 @@ class Bert(BertForQuestionAnswering):
         start, end = pos.split(1, dim=-1)
         ans_start_predict = start.squeeze(-1)
         ans_end_predict = end.squeeze(-1)
-        if not start_positions == None:
+
+        if not start_positions == None: #training
             if len(start_positions.size()) > 1:
                 start_positions = start_positions.squeeze(-1)
             if len(end_positions.size()) > 1:
