@@ -1,0 +1,6 @@
+{
+    "batch_size":4,
+    "epoch":20,
+    "lr":5e-6,
+    "text_max_len": 384
+}
