@@ -151,7 +151,7 @@ def main(args, config):
             files_per_len_ans[file_name][int(data_line[2])] = []
 
     print('loading model...')
-    model = build_model()
+    model = build_model(args.model_path)
 
     print('predicting...')
     predictions = predict(model, predict_dataloader)
@@ -183,6 +183,7 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--test_data_path', default='release/dev/ca_data/', type=str)
     parser.add_argument('--output_path', default='output.csv', type=str)
+    parser.add_argument('--model_path', default='./best.pt', type=str)
     args = parser.parse_args()
 
     device = torch.device("cuda:{}".format(config['gpus']) if torch.cuda.is_available() else "cpu")

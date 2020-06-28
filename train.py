@@ -104,8 +104,13 @@ def main(config):
 
 if __name__ == '__main__':
 
-	train_data_path = './release/train/ca_data/'
-	dev_data_path = './release/dev/ca_data/'
+	parser = ArgumentParser()
+    parser.add_argument('--train_path', default='./release/train/ca_data/', type=str)
+    parser.add_argument('--dev_path', default='./release/dev/ca_data/', type=str)
+    args = parser.parse_args()
+
+	train_data_path = args.train_data_path
+	dev_data_path = args.dev_path
 
 	#reading config
 	with open("./config.json") as f:
