@@ -10,18 +10,18 @@
 ```
 
 ```bash
-$python dataset.py
+$ python3 dataset.py
 ```
 
 ## Train
 
 ```bash
-$python train.py
+$ python3 train.py
 ```
 
 ## Test
 
 ```bash
-$python test.py  --test_data_path path/to/test --output_path path/to/prediction_file
+$ python3 test.py  --test_data_path path/to/test --output_path path/to/prediction_file
 ```
 
